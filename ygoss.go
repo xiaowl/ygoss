@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -52,22 +53,33 @@ func (qs orderedQueryPair) Less(i, j int) bool {
 }
 
 // build a base string for later signing  http://tools.ietf.org/html/rfc5849#section-3.4.1
-func (session *OAuthSession) mkBaseString(request *http.Request) (string, map[string]string) {
+func (session *OAuthSession) mkBaseStringRequest(request *http.Request) (string, map[string]string) {
 	header := session.mkAuthorizationHeader()
 	vals := request.URL.Query()
 	for k, v := range header {
 		vals[k] = []string{v}
 	}
-	return request.Method + "&" + escape(baseURI(request)) + "&" +
-		escape(encodeParameters(vals)), header
+	return request.Method + "&" + Escape(baseURI(request.URL)) + "&" +
+		Escape(encodeParameters(vals)), header
+}
+
+// build a base string for later signing  http://tools.ietf.org/html/rfc5849#section-3.4.1
+func (session *OAuthSession) mkBaseStringURL(u *url.URL) (string, map[string]string) {
+	header := session.mkAuthorizationHeader()
+	vals := u.Query()
+	for k, v := range header {
+		vals[k] = []string{v}
+	}
+	return "GET" + "&" + Escape(baseURI(u)) + "&" +
+		Escape(encodeParameters(vals)), header
 }
 
 // Authorize a http.Request instance, by adding OAuth header. http://tools.ietf.org/html/rfc5849#section-3.4
-func (session *OAuthSession) Authorize(request *http.Request) {
-	text, header := session.mkBaseString(request)
+func (session *OAuthSession) AuthorizeRequest(request *http.Request) {
+	text, header := session.mkBaseStringRequest(request)
 	// as we don't have a per-user token secret, so only "&" appended
 	// http://tools.ietf.org/html/rfc5849#section-3.4.2
-	key := escape(session.ConsumerSecret) + "&"
+	key := Escape(session.ConsumerSecret) + "&"
 	mac := hmac.New(sha1.New, []byte(key))
 	mac.Write([]byte(text))
 	signature := mac.Sum(nil)
@@ -77,6 +89,25 @@ func (session *OAuthSession) Authorize(request *http.Request) {
 		components = append(components, fmt.Sprintf(`%s="%s"`, n, v))
 	}
 	request.Header.Add(OAUTH_HEADER, "OAuth "+strings.Join(components, ","))
+}
+
+// Authorize a http.Request instance, by adding OAuth header. http://tools.ietf.org/html/rfc5849#section-3.4
+func (session *OAuthSession) AuthorizeURL(u *url.URL) {
+	text, header := session.mkBaseStringURL(u)
+	// as we don't have a per-user token secret, so only "&" appended
+	// http://tools.ietf.org/html/rfc5849#section-3.4.2
+	key := Escape(session.ConsumerSecret) + "&"
+	mac := hmac.New(sha1.New, []byte(key))
+	mac.Write([]byte(text))
+	signature := mac.Sum(nil)
+	header[OAUTH_SIGNATURE] = base64.StdEncoding.EncodeToString(signature)
+	components := make([]string, 0)
+	q := u.Query()
+	for n, v := range header {
+		components = append(components, fmt.Sprintf(`%s="%s"`, n, v))
+		q.Set(n, v)
+	}
+	u.RawQuery = encodeParameters(q)
 }
 
 // Build the key-value pairs for authorization, used both in "sign" and "Authorization: " header
@@ -96,17 +127,17 @@ func (session *OAuthSession) mkAuthorizationHeader() map[string]string {
 	return headers
 }
 
-func baseURI(request *http.Request) string {
-	return request.URL.Scheme + "://" + request.URL.Host + request.URL.Path
+func baseURI(u *url.URL) string {
+	return u.Scheme + "://" + u.Host + u.Path
 }
 
 // Normalize parameters http://tools.ietf.org/html/rfc5849#section-3.4.1.3.2
 func encodeParameters(query map[string][]string) string {
 	var encoded = make([]queryPair, 0)
 	for name, value := range query {
-		n := escape(name)
+		n := Escape(name)
 		for _, v := range value {
-			encoded = append(encoded, queryPair{n, escape(v)})
+			encoded = append(encoded, queryPair{n, Escape(v)})
 		}
 	}
 	sort.Sort(orderedQueryPair(encoded))
@@ -118,7 +149,7 @@ func encodeParameters(query map[string][]string) string {
 }
 
 // helpers from https://github.com/mrjones/oauth/blob/master/oauth.go#L591
-func escape(s string) string {
+func Escape(s string) string {
 	t := make([]byte, 0, 3*len(s))
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -136,5 +167,3 @@ func escape(s string) string {
 func isEscapable(b byte) bool {
 	return !('A' <= b && b <= 'Z' || 'a' <= b && b <= 'z' || '0' <= b && b <= '9' || b == '-' || b == '.' || b == '_' || b == '~')
 }
-
-// end of helpers
